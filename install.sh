@@ -1,0 +1,67 @@
+#!/bin/sh
+set -eu
+
+# Stable raw bootstrap. Version selection is an argument; versioned artifacts live in GitHub Releases.
+# curl -fsSL https://raw.githubusercontent.com/BeforeWave/dsh-with-chatgpt/main/install.sh | sh
+# curl -fsSL https://raw.githubusercontent.com/BeforeWave/dsh-with-chatgpt/main/install.sh | sh -s -- 0.1.4
+
+VERSION=${DSH_WITH_CHATGPT_VERSION:-${1:-latest}}
+VERSION=${VERSION#v}
+RELEASE_URL=${DSH_WITH_CHATGPT_RELEASE_URL:-https://github.com/BeforeWave/dsh-with-chatgpt/releases}
+RELEASE_TOOL_URL=${BEFOREWAVE_RELEASE_TOOL_URL:-https://raw.githubusercontent.com/BeforeWave/agent-helm/main/install-release.sh}
+PROFILE=${DSH_WITH_CHATGPT_PROFILE:-web}
+
+fail() {
+  printf '%s\n' "DSH with ChatGPT installer: $1" >&2
+  exit 1
+}
+
+stage() {
+  printf '%s\n' "DSH with ChatGPT [$1/3] $2"
+}
+
+release_tool() {
+  curl -fsSL "$RELEASE_TOOL_URL" | /bin/sh -s -- "$@"
+}
+
+stage 1 "DSH host check"
+command -v dsh >/dev/null 2>&1 || fail "dsh is required. Install DSH Desktop/CLI first."
+command -v curl >/dev/null 2>&1 || fail "curl is required."
+
+VERSION=$(release_tool resolve --release-url "$RELEASE_URL" --version "$VERSION") \
+  || fail "Could not resolve DSH with ChatGPT GitHub Release version."
+stage 2 "GitHub Release ${VERSION}"
+
+DSH_HOME_DIR=${DSH_HOME:-${HOME:?}/.dsh}
+ARTIFACT_DIR="$DSH_HOME_DIR/artifacts/dsh-with-chatgpt/$VERSION"
+mkdir -p "$ARTIFACT_DIR"
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/dsh-with-chatgpt-release.XXXXXX")
+trap 'rm -rf "$ROOT"' EXIT HUP INT TERM
+DOWNLOAD=$ROOT/dsh-with-chatgpt.tgz
+release_tool download \
+  --release-url "$RELEASE_URL" \
+  --version "$VERSION" \
+  --artifact-id dsh-with-chatgpt-package \
+  --output "$DOWNLOAD" >/dev/null \
+  || fail "Could not download DSH with ChatGPT GitHub Release v$VERSION."
+# pnpm treats a local file dependency as unchanged when its path is unchanged,
+# even if a GitHub re-release replaces the bytes at that path.
+# The shared release tool has already verified the downloaded SHA-256.
+if command -v shasum >/dev/null 2>&1; then
+  CONTENT_SHA=$(shasum -a 256 "$DOWNLOAD" | awk '{print $1}')
+elif command -v sha256sum >/dev/null 2>&1; then
+  CONTENT_SHA=$(sha256sum "$DOWNLOAD" | awk '{print $1}')
+else
+  fail "SHA-256 verification requires shasum or sha256sum."
+fi
+ARCHIVE_DIR="$ARTIFACT_DIR/$CONTENT_SHA"
+ARCHIVE="$ARCHIVE_DIR/dsh-with-chatgpt.tgz"
+mkdir -p "$ARCHIVE_DIR"
+mv -f "$DOWNLOAD" "$ARCHIVE"
+
+dsh plugin --profile "$PROFILE" add "$ARCHIVE"
+trap - EXIT HUP INT TERM
+rm -rf "$ROOT"
+
+stage 3 "Installed in DSH profile ${PROFILE}"
+printf '%s\n' "DSH with ChatGPT ${VERSION} installed. Start with: dsh ${PROFILE}"
